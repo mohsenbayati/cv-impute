@@ -15,8 +15,8 @@ class Problem(NamedTuple):
     train: Dataset
     test: Dataset
 
-    def fit(self, alphas=None):
-        return self.imputer.fit(self.train, alphas=alphas)
+    def fit(self, alphas=None, max_iters = 100):
+        return self.imputer.fit(self.train, alphas=alphas, max_iters = max_iters)
 
     def eval_prediction(self, yh):
         ys = self.test.ys
@@ -33,8 +33,8 @@ class Problem(NamedTuple):
 
         return Solution(svds, mats, errs)
 
-    def fit_and_eval(self, alphas):
-        svds = self.fit(alphas)
+    def fit_and_eval(self, alphas, max_iters = 100):
+        svds = self.fit(alphas, max_iters)
 
         return self.eval(svds)
 
@@ -99,14 +99,28 @@ def split_and_add_to_subproblems(probs, xs, ys, foldids=None, shuffle=True):
 
     add_to_subproblems(probs, folds)
 
+def cv_alpha_selection(probs, alpha_min_ratio, eta = 0.5):
+    alpha_max = max(prob.alpha_max() for prob in probs)
+    alpha_min = alpha_max * alpha_min_ratio
 
-def cv_impute(probs, n_alpha=100, alpha_min_ratio=0.01, alphas=None, verbose=1):
+    alphas = []
+    alpha = alpha_max
+    while alpha > alpha_min:
+        alphas.append(alpha)
+        alpha *= eta
+    
+    alphas.append(alpha_min)
+    #alphas = np.geomspace(alpha_max, alpha_max*.0001, 100)
+    #alphas = np.geomspace(alpha_max, alpha_min, n_alpha)
+
+    return(alphas)
+
+
+
+def cv_impute(probs, refit_prob, n_alpha=100, alpha_min_ratio=0.01, alphas=None, verbose=1):
     # compute alpha sequence if not provided
     if not alphas:
-        alpha_max = max(prob.alpha_max() for prob in probs)
-        alpha_min = alpha_max * alpha_min_ratio
-
-        alphas = np.geomspace(alpha_max, alpha_min, n_alpha)
+        alphas = cv_alpha_selection(probs, alpha_min_ratio)
 
     # computing the test error for each fitted matrix
     sols = []
@@ -126,16 +140,29 @@ def cv_impute(probs, n_alpha=100, alpha_min_ratio=0.01, alphas=None, verbose=1):
     opt = np.argmin(errors).item()
     est = sum(sol.mats[opt] for sol in sols) / len(sols)
 
-    if verbose:
+    if (verbose==2):
         print(f'optimum = {opt}')
         print(f'optimum alpha = {alphas[opt]}')
         print(f'maximum alpha = {alphas[0]}')
         print(f'minimum alpha = {alphas[-1]}')
+    
+    alpha_stat = [alphas[-1], alphas[opt], alphas[0]]
 
-    return est, alphas[opt], sols
+    #------------ CV Single Output
+    opt_single = np.argmin(sols[0].errs).item()
+    est_single = sols[0].mats[opt_single]
+    alpha_stat_single = [alphas[-1], alphas[opt_single], alphas[0]]
+
+    #------------ CV Refit
+    refit_alphas = refit_prob.get_alpha_seq(alphas[opt])
+
+    svd = refit_prob.fit(refit_alphas)[-1]
+    est_refit = svd.to_matrix()
+
+    return est, est_single, est_refit, alpha_stat, alpha_stat_single
 
 
-def oracle_impute(prob, alpha):
+def oracle_impute(prob, alpha, verbose = 1):
     alphas = prob.get_alpha_seq(alpha)
 
     # computing the test error for each fitted matrix
@@ -144,8 +171,28 @@ def oracle_impute(prob, alpha):
     opt = np.argmin(sol.errs).item()
     est = sol.mats[opt]
 
-    return est, alphas[opt], sol
+    if (verbose==2):
+        print(f'oracle alpha = {alphas[opt]}, smallest alpha = {alpha}')
 
+    alpha_stat = [alphas[-1], alphas[opt], alphas[0]]
+
+    return est, alpha_stat, sol
+
+def overfit_impute(prob, alpha, verbose = 1):
+    alphas = prob.get_alpha_seq(alpha)
+
+    # computing the test error for each fitted matrix
+    sol = prob.fit_and_eval(alphas)
+
+    opt = np.argmin(sol.errs).item()
+    est = sol.mats[opt]
+
+    if (verbose==2):
+        print(f'overfit alpha = {alphas[opt]}, smallest alpha = {alpha}')
+
+    alpha_stat = [alphas[-1], alphas[opt], alphas[0]]
+
+    return est, alpha_stat, sol
 
 def regular_impute(prob, alpha: float):
     alphas = prob.get_alpha_seq(alpha)
@@ -154,7 +201,7 @@ def regular_impute(prob, alpha: float):
     svd = prob.fit(alphas)[-1]
     est = svd.to_matrix()
 
-    return est, alpha
+    return est, svd
 
 
 # miscellaneous
@@ -164,7 +211,6 @@ def subarray(arr, ind):
 
 def compute_op_norm_thresh(config, n_sample, level, repetition):
     norms = []
-
     for _ in range(repetition):
         rs = npr.randint(config.n_row, size=n_sample)
         cs = npr.randint(config.n_col, size=n_sample)
@@ -183,8 +229,9 @@ def compute_op_norm_thresh(config, n_sample, level, repetition):
 
 def moments_to_confidence_band(m0, m1, m2):
     ys = m1 / m0
-    vs = (m2 - m1 ** 2 / m0) / (m0 - 1)
-    ss = vs ** 0.5
+    vs = (m2 - m1 ** 2 / m0) / (m0 - 1)    
+    #ss = (vs ** 0.5)
+    ss = 2 * (vs ** 0.5) / np.sqrt(m0)  # Updated to reflect 2xSE
 
     return ys, ss
 
