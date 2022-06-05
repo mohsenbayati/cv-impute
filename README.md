@@ -1,4 +1,7 @@
 # cv-impute
+
+These codes are written by Nima Hamidi: https://github.com/nimily
+
 This repository contains codes for replicating simulations of the following paper:
 
 N. Hamidi and M. Bayati, On Low-rank Trace Regression under General Sampling Distribution, https://arxiv.org/abs/1904.08576.
